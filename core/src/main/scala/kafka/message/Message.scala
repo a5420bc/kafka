@@ -331,6 +331,7 @@ class Message(val buffer: ByteBuffer,
    * convert the message to specified format
    */
   def toFormatVersion(toMagicValue: Byte): Message = {
+    //如果格式一致就不需要申请buffer
     if (magic == toMagicValue)
       this
     else {
@@ -356,8 +357,10 @@ class Message(val buffer: ByteBuffer,
       // Up-conversion, insert the timestamp field
       if (timestampType == TimestampType.LOG_APPEND_TIME)
         byteBuffer.putLong(now)
-      else
+      else {
         byteBuffer.putLong(Message.NoTimestamp)
+      }
+      //将消息内容写入
       byteBuffer.put(buffer.array(), buffer.arrayOffset() + Message.KeySizeOffset_V0, size - Message.KeySizeOffset_V0)
     } else {
       // Down-conversion, reserve CRC and update magic byte

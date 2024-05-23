@@ -394,6 +394,7 @@ public class NetworkClient implements KafkaClient {
         for (ClientRequest request : this.inFlightRequests.clearAll(nodeId)) {
             log.trace("Cancelled request {} due to node {} being disconnected", request, nodeId);
             if (!metadataUpdater.maybeHandleDisconnection(request))
+                //因为是produce请求是需要执行回调函数的，所以加入到返回中
                 responses.add(new ClientResponse(request, now, true, null));
         }
     }
@@ -406,9 +407,11 @@ public class NetworkClient implements KafkaClient {
      * @param now The current time
      */
     private void handleTimedOutRequests(List<ClientResponse> responses, long now) {
+        //获取超时的请求
         List<String> nodeIds = this.inFlightRequests.getNodesWithTimedOutRequests(now, this.requestTimeoutMs);
         for (String nodeId : nodeIds) {
             // close connection to the node
+            //直接就是关闭这个链接
             this.selector.close(nodeId);
             log.debug("Disconnecting from node {} due to request timeout.", nodeId);
             processDisconnection(responses, nodeId, now);

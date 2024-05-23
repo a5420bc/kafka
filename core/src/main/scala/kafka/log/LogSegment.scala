@@ -102,7 +102,9 @@ class LogSegment(val log: FileMessageSet,
    */
   @threadsafe
   private[log] def translateOffset(offset: Long, startingFilePosition: Int = 0): OffsetPosition = {
+    //先通过二分法查找索引文件
     val mapping = index.lookup(offset)
+    //再顺序遍历查找
     log.searchFor(offset, max(mapping.position, startingFilePosition))
   }
 
@@ -124,6 +126,7 @@ class LogSegment(val log: FileMessageSet,
       throw new IllegalArgumentException("Invalid max size for log read (%d)".format(maxSize))
 
     val logSize = log.sizeInBytes // this may change, need to save a consistent copy
+    //将绝对定位转为segment中的相对定位
     val startPosition = translateOffset(startOffset)
 
     // if the start position is already off the end of the log, return null
@@ -138,6 +141,7 @@ class LogSegment(val log: FileMessageSet,
 
     // calculate the length of the message set to read based on whether or not they gave us a maxOffset
     val length = maxOffset match {
+      //没有最大偏移量，只需要考虑maxsize
       case None =>
         // no max offset, just read until the max position
         min((maxPosition - startPosition.position).toInt, maxSize)
@@ -170,6 +174,7 @@ class LogSegment(val log: FileMessageSet,
    */
   @nonthreadsafe
   def recover(maxMessageSize: Int): Int = {
+    //直接干掉索引文件
     index.truncate()
     index.resize(index.maxIndexSize)
     var validBytes = 0
@@ -178,7 +183,9 @@ class LogSegment(val log: FileMessageSet,
     try {
       while(iter.hasNext) {
         val entry = iter.next
+        //crc是否与计算值一致
         entry.message.ensureValid()
+        //索引追加
         if(validBytes - lastIndexEntry > indexIntervalBytes) {
           // we need to decompress the message, if required, to get the offset of the first uncompressed message
           val startOffset =
@@ -191,12 +198,14 @@ class LogSegment(val log: FileMessageSet,
           index.append(startOffset, validBytes)
           lastIndexEntry = validBytes
         }
+        //合法字节追加
         validBytes += MessageSet.entrySize(entry.message)
       }
     } catch {
       case e: CorruptRecordException =>
         logger.warn("Found invalid messages in log segment %s at byte offset %d: %s.".format(log.file.getAbsolutePath, validBytes, e.getMessage))
     }
+    //发现了日志原始文件有异常的地方
     val truncated = log.sizeInBytes - validBytes
     log.truncateTo(validBytes)
     index.trimToValidSize()

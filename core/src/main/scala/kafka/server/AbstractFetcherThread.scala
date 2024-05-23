@@ -83,17 +83,20 @@ abstract class AbstractFetcherThread(name: String,
     fetcherLagStats.unregister()
   }
 
+  //实际上干活的地方
   override def doWork() {
 
     val fetchRequest = inLock(partitionMapLock) {
       val fetchRequest = buildFetchRequest(partitionMap)
       if (fetchRequest.isEmpty) {
         trace("There are no active partitions. Back off for %d ms before sending a fetch request".format(fetchBackOffMs))
+        //刚才的等待就在这里处理的
         partitionMapCond.await(fetchBackOffMs, TimeUnit.MILLISECONDS)
       }
       fetchRequest
     }
 
+    //有数据了可以处理啦
     if (!fetchRequest.isEmpty)
       processFetchRequest(fetchRequest)
   }
@@ -116,6 +119,7 @@ abstract class AbstractFetcherThread(name: String,
           }
         }
     }
+    //请求速率记录一下
     fetcherStats.requestRate.mark()
 
     if (responseData.nonEmpty) {
@@ -126,6 +130,8 @@ abstract class AbstractFetcherThread(name: String,
           val TopicAndPartition(topic, partitionId) = topicAndPartition
           partitionMap.get(topicAndPartition).foreach(currentPartitionFetchState =>
             // we append to the log if the current offset is defined and it is the same as the offset requested during fetch
+            //这个返回值确实是当前的请求所想要的
+            //1. 延迟请求的返回
             if (fetchRequest.offset(topicAndPartition) == currentPartitionFetchState.offset) {
               Errors.forCode(partitionData.errorCode) match {
                 case Errors.NONE =>
@@ -136,6 +142,10 @@ abstract class AbstractFetcherThread(name: String,
                       case Some(m: MessageAndOffset) => m.nextOffset
                       case None => currentPartitionFetchState.offset
                     }
+                    //更新三样东西
+                    //1. partitionMap下次更新的offset
+                    //2. 当前topic Partition的lag信息
+                    //3. 监控指标的字节写入速率
                     partitionMap.put(topicAndPartition, new PartitionFetchState(newOffset))
                     fetcherLagStats.getAndMaybePut(topic, partitionId).lag = Math.max(0L, partitionData.highWatermark - newOffset)
                     fetcherStats.byteRate.mark(validBytes)
@@ -213,6 +223,7 @@ abstract class AbstractFetcherThread(name: String,
     partitionMapLock.lockInterruptibly()
     try {
       topicAndPartitions.foreach { topicAndPartition =>
+        //拉取时移除这个partition
         partitionMap.remove(topicAndPartition)
         fetcherLagStats.unregister(topicAndPartition.topic, topicAndPartition.partition)
       }

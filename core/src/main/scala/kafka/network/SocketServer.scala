@@ -238,6 +238,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
                               connectionQuotas: ConnectionQuotas) extends AbstractServerThread(connectionQuotas) with KafkaMetricsGroup {
 
   private val nioSelector = NSelector.open()
+  //启动连接
   val serverChannel = openServerSocket(endPoint.host, endPoint.port)
 
   this.synchronized {
@@ -322,6 +323,7 @@ private[kafka] class Acceptor(val endPoint: EndPoint,
     val serverSocketChannel = key.channel().asInstanceOf[ServerSocketChannel]
     val socketChannel = serverSocketChannel.accept()
     try {
+      //accept socket的默认配置
       connectionQuotas.inc(socketChannel.socket().getInetAddress)
       socketChannel.configureBlocking(false)
       socketChannel.socket().setTcpNoDelay(true)
@@ -487,6 +489,7 @@ private[kafka] class Processor(val id: Int,
           channel.socketAddress)
         val req = RequestChannel.Request(processor = id, connectionId = receive.source, session = session, buffer = receive.payload, startTimeMs = time.milliseconds, securityProtocol = protocol)
         requestChannel.sendRequest(req)
+        //请求已经发送了暂时就接受请求啦
         selector.mute(receive.source)
       } catch {
         case e @ (_: InvalidRequestException | _: SchemaException) =>

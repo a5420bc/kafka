@@ -95,6 +95,7 @@ object ZkUtils {
     }
   }
 
+  ///brokers/topics/$topic
   /*
    * Get calls that only depend on static paths
    */
@@ -102,19 +103,24 @@ object ZkUtils {
     ZkUtils.BrokerTopicsPath + "/" + topic
   }
 
+  ///brokers/topics/$topic/partitions
   def getTopicPartitionsPath(topic: String): String = {
     getTopicPath(topic) + "/partitions"
   }
 
+  ///brokers/topics/$topic/partitions/$partitionId
   def getTopicPartitionPath(topic: String, partitionId: Int): String =
     getTopicPartitionsPath(topic) + "/" + partitionId
 
+  ///brokers/topics/$topic/partitions/$partitionId/state
   def getTopicPartitionLeaderAndIsrPath(topic: String, partitionId: Int): String =
     getTopicPartitionPath(topic, partitionId) + "/" + "state"
 
+  //configs/$entityType
   def getEntityConfigRootPath(entityType: String): String =
     ZkUtils.EntityConfigPath + "/" + entityType
 
+  //configs/$entityType/$entity
   def getEntityConfigPath(entityType: String, entity: String): String =
     getEntityConfigRootPath(entityType) + "/" + entity
 
@@ -601,6 +607,7 @@ class ZkUtils(val zkClient: ZkClient,
     ret
   }
 
+  //返回topicpartition -> [0, 1, 2]
   def getReplicaAssignmentForTopics(topics: Seq[String]): mutable.Map[TopicAndPartition, Seq[Int]] = {
     val ret = new mutable.HashMap[TopicAndPartition, Seq[Int]]
     topics.foreach { topic =>
@@ -610,6 +617,7 @@ class ZkUtils(val zkClient: ZkClient,
           Json.parseFull(jsonPartitionMap) match {
             case Some(m) => m.asInstanceOf[Map[String, Any]].get("partitions") match {
               case Some(repl)  =>
+                //partition编号和副本所在的broker编号
                 val replicaMap = repl.asInstanceOf[Map[String, Seq[Int]]]
                 for((partition, replicas) <- replicaMap){
                   ret.put(TopicAndPartition(topic, partition.toInt), replicas)
@@ -668,6 +676,21 @@ class ZkUtils(val zkClient: ZkClient,
     }
   }
 
+  //  {
+  //    "partitions": [
+  //    {
+  //      "topic": "topic_name_1",
+  //      "partition": 0,
+  //      "replicas": [broker_id_1, broker_id_2, broker_id_3]
+  //    },
+  //    {
+  //      "topic": "topic_name_2",
+  //      "partition": 1,
+  //      "replicas": [broker_id_2, broker_id_4]
+  //    },
+  //    // 更多分区...
+  //    ]
+  //  }
   // Parses without deduplicating keys so the data can be checked before allowing reassignment to proceed
   def parsePartitionReassignmentDataWithoutDedup(jsonData: String): Seq[(TopicAndPartition, Seq[Int])] = {
     Json.parseFull(jsonData) match {
@@ -735,6 +758,7 @@ class ZkUtils(val zkClient: ZkClient,
     }
   }
 
+  //读取优先副本的数据
   def getPartitionsUndergoingPreferredReplicaElection(): Set[TopicAndPartition] = {
     // read the partitions and their new replica list
     val jsonPartitionListOpt = readDataMaybeNull(PreferredReplicaLeaderElectionPath)._1

@@ -112,20 +112,29 @@ class ReplicaFetcherThread(name: String,
   // process fetched data
   def processPartitionData(topicAndPartition: TopicAndPartition, fetchOffset: Long, partitionData: PartitionData) {
     try {
+      //topic partition
       val TopicAndPartition(topic, partitionId) = topicAndPartition
+      //获得对应的副本
       val replica = replicaMgr.getReplica(topic, partitionId).get
+      //获取到的消息序列
       val messageSet = partitionData.toByteBufferMessageSet
+      //警告消息大小
       warnIfMessageOversized(messageSet, topicAndPartition)
 
+      //fetchoffset应该是要和当前副本的LEO值相同的
       if (fetchOffset != replica.logEndOffset.messageOffset)
         throw new RuntimeException("Offset mismatch for partition %s: fetched offset = %d, log end offset = %d.".format(topicAndPartition, fetchOffset, replica.logEndOffset.messageOffset))
+
+      //trace日志
       if (logger.isTraceEnabled)
         trace("Follower %d has replica log end offset %d for partition %s. Received %d messages and leader hw %d"
           .format(replica.brokerId, replica.logEndOffset.messageOffset, topicAndPartition, messageSet.sizeInBytes, partitionData.highWatermark))
+      //写副本数据
       replica.log.get.append(messageSet, assignOffsets = false)
       if (logger.isTraceEnabled)
         trace("Follower %d has replica log end offset %d after appending %d bytes of messages for partition %s"
           .format(replica.brokerId, replica.logEndOffset.messageOffset, messageSet.sizeInBytes, topicAndPartition))
+      //跟随着的HW更新
       val followerHighWatermark = replica.logEndOffset.messageOffset.min(partitionData.highWatermark)
       // for the follower replica, we do not need to keep
       // its segment base offset the physical position,
@@ -153,7 +162,11 @@ class ReplicaFetcherThread(name: String,
    * Handle a partition whose offset is out of range and return a new fetch offset.
    */
   def handleOffsetOutOfRange(topicAndPartition: TopicAndPartition): Long = {
+      // 从replicaMgr中获取指定topic和partition的replica。
+    // topicAndPartition: 包含topic和partition信息的关键字，用于指定要获取replica的数据。
+    // 返回值: 获取到的replica对象。
     val replica = replicaMgr.getReplica(topicAndPartition.topic, topicAndPartition.partition).get
+
 
     /**
      * Unclean leader election: A follower goes down, in the meanwhile the leader keeps appending messages. The follower comes back up
@@ -165,13 +178,29 @@ class ReplicaFetcherThread(name: String,
      *
      * There is a potential for a mismatch between the logs of the two replicas here. We don't fix this mismatch as of now.
      */
+    //Leader: A B C D
+    //Follower: Down A B
+
+    //Leader: Down
+    //Follower: Down
+
+    //Leader: A B E
+    //Follower: Down A B C D
+
+    //Leader: A B E
+    //Follower:A B C D
+
+    //Leader: A B E
+    //Follower:A B
     val leaderEndOffset: Long = earliestOrLatestOffset(topicAndPartition, ListOffsetRequest.LATEST_TIMESTAMP,
       brokerConfig.brokerId)
 
+    //当leader的leo的值小于当前replica的leo值，则进行日志截断
     if (leaderEndOffset < replica.logEndOffset.messageOffset) {
       // Prior to truncating the follower's log, ensure that doing so is not disallowed by the configuration for unclean leader election.
       // This situation could only happen if the unclean election configuration for a topic changes while a replica is down. Otherwise,
       // we should never encounter this situation since a non-ISR leader cannot be elected if disallowed by the broker configuration.
+      //只有非clean选举才会出现这个问题
       if (!LogConfig.fromProps(brokerConfig.originals, AdminUtils.fetchEntityConfig(replicaMgr.zkUtils,
         ConfigType.Topic, topicAndPartition.topic)).uncleanLeaderElectionEnable) {
         // Log a fatal error and shutdown the broker to ensure that data loss does not unexpectedly occur.
@@ -186,6 +215,9 @@ class ReplicaFetcherThread(name: String,
       replicaMgr.logManager.truncateTo(Map(topicAndPartition -> leaderEndOffset))
       leaderEndOffset
     } else {
+      //Leader: B C D
+      //Follower: A
+      //OldLeaderHW > newLeaderLEO
       /**
        * If the leader's log end offset is greater than the follower's log end offset, there are two possibilities:
        * 1. The follower could have been down for a long time and when it starts up, its end offset could be smaller than the leader's
@@ -226,6 +258,7 @@ class ReplicaFetcherThread(name: String,
   }
 
   protected def fetch(fetchRequest: FetchRequest): Map[TopicAndPartition, PartitionData] = {
+    //同步发送请求
     val clientResponse = sendRequest(ApiKeys.FETCH, Some(fetchRequestVersion), fetchRequest.underlying)
     new FetchResponse(clientResponse.responseBody).responseData.asScala.map { case (key, value) =>
       TopicAndPartition(key.topic, key.partition) -> new PartitionData(value)
@@ -261,6 +294,8 @@ class ReplicaFetcherThread(name: String,
     val clientResponse = sendRequest(ApiKeys.LIST_OFFSETS, None, request)
     val response = new ListOffsetResponse(clientResponse.responseBody)
     val partitionData = response.responseData.get(topicPartition)
+    //返回最后的baseoffset
+    //返回当前的active segment的offset
     Errors.forCode(partitionData.errorCode) match {
       case Errors.NONE => partitionData.offsets.asScala.head
       case errorCode => throw errorCode.exception
@@ -270,6 +305,7 @@ class ReplicaFetcherThread(name: String,
   protected def buildFetchRequest(partitionMap: Map[TopicAndPartition, PartitionFetchState]): FetchRequest = {
     val requestMap = mutable.Map.empty[TopicPartition, JFetchRequest.PartitionData]
 
+    //从新的位置开始构造数据拉取请求
     partitionMap.foreach { case ((TopicAndPartition(topic, partition), partitionFetchState)) =>
       if (partitionFetchState.isActive)
         requestMap(new TopicPartition(topic, partition)) = new JFetchRequest.PartitionData(partitionFetchState.offset, fetchSize)

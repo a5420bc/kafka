@@ -71,8 +71,10 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
   // to be defined in subclass to create a specific fetcher
   def createFetcherThread(fetcherId: Int, sourceBroker: BrokerEndPoint): AbstractFetcherThread
 
+  //如果某个副本确认成为了follow需要启动拉取线程
   def addFetcherForPartitions(partitionAndOffsets: Map[TopicAndPartition, BrokerAndInitialOffset]) {
     mapLock synchronized {
+      //将任务分组，这个语法我倒是没太看懂
       val partitionsPerFetcher = partitionAndOffsets.groupBy{ case(topicAndPartition, brokerAndInitialOffset) =>
         BrokerAndFetcherId(brokerAndInitialOffset.broker, getFetcherId(topicAndPartition.topic, topicAndPartition.partition))}
       for ((brokerAndFetcherId, partitionAndOffsets) <- partitionsPerFetcher) {
@@ -82,6 +84,7 @@ abstract class AbstractFetcherManager(protected val name: String, clientId: Stri
           case None =>
             fetcherThread = createFetcherThread(brokerAndFetcherId.fetcherId, brokerAndFetcherId.broker)
             fetcherThreadMap.put(brokerAndFetcherId, fetcherThread)
+            //现成在这里启动
             fetcherThread.start
         }
 

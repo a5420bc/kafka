@@ -166,14 +166,18 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
                                               .format(controllerId, controller.epoch, replicaId, topicAndPartition, targetState))
     val currState = replicaState.getOrElseUpdate(partitionAndReplica, NonExistentReplica)
     try {
+      //topic partition对应的分配情况
       val replicaAssignment = controllerContext.partitionReplicaAssignment(topicAndPartition)
+      //目前的target state就是OnlineReplica
       targetState match {
         case NewReplica =>
           assertValidPreviousStates(partitionAndReplica, List(NonExistentReplica), targetState)
           // start replica as a follower to the current leader for its partition
+          //从zk获取leader和ISR的信息
           val leaderIsrAndControllerEpochOpt = ReplicationUtils.getLeaderIsrAndEpochForPartition(zkUtils, topic, partition)
           leaderIsrAndControllerEpochOpt match {
             case Some(leaderIsrAndControllerEpoch) =>
+              //已经是某个leader不可能再成为new replica
               if(leaderIsrAndControllerEpoch.leaderAndIsr.leader == replicaId)
                 throw new StateChangeFailedException("Replica %d for partition %s cannot be moved to NewReplica"
                   .format(replicaId, topicAndPartition) + "state as it is being requested to become leader")
@@ -213,12 +217,16 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
           stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
             .format(controllerId, controller.epoch, replicaId, topicAndPartition, currState, targetState))
         case OnlineReplica =>
+          //在做合法性的检查
           assertValidPreviousStates(partitionAndReplica,
             List(NewReplica, OnlineReplica, OfflineReplica, ReplicaDeletionIneligible), targetState)
+          //对当前的状态进行确认
           replicaState(partitionAndReplica) match {
             case NewReplica =>
               // add this replica to the assigned replicas list for its partition
+              //当前集合
               val currentAssignedReplicas = controllerContext.partitionReplicaAssignment(topicAndPartition)
+              //新增的一个副本ISR
               if(!currentAssignedReplicas.contains(replicaId))
                 controllerContext.partitionReplicaAssignment.put(topicAndPartition, currentAssignedReplicas :+ replicaId)
               stateChangeLogger.trace("Controller %d epoch %d changed state of replica %d for partition %s from %s to %s"
@@ -237,6 +245,7 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
                   // started a log for that partition and does not have a high watermark value for this partition
               }
           }
+          //转化了状态
           replicaState.put(partitionAndReplica, OnlineReplica)
         case OfflineReplica =>
           assertValidPreviousStates(partitionAndReplica,
@@ -336,6 +345,7 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
             // mark replicas on dead brokers as failed for topic deletion, if they belong to a topic to be deleted.
             // This is required during controller failover since during controller failover a broker can go down,
             // so the replicas on that broker should be moved to ReplicaDeletionIneligible to be on the safer side.
+            //可能这个broker刚好down
             replicaState.put(partitionAndReplica, ReplicaDeletionIneligible)
         }
       }
@@ -371,8 +381,11 @@ class ReplicaStateMachine(controller: KafkaController) extends Logging {
                 .format(newBrokerIdsSorted.mkString(","), deadBrokerIdsSorted.mkString(","), liveBrokerIdsSorted.mkString(",")))
               newBrokers.foreach(controllerContext.controllerChannelManager.addBroker)
               deadBrokerIds.foreach(controllerContext.controllerChannelManager.removeBroker)
-              if(newBrokerIds.size > 0)
+              //有broker启动
+              if(newBrokerIds.size > 0) {
                 controller.onBrokerStartup(newBrokerIdsSorted)
+              }
+              //broker挂掉了
               if(deadBrokerIds.size > 0)
                 controller.onBrokerFailure(deadBrokerIdsSorted)
             } catch {

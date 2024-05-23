@@ -51,9 +51,17 @@ object AdminUtils extends Logging {
    * 2. For partitions assigned to a particular broker, their other replicas are spread over the other brokers.
    * 3. If all brokers have rack information, assign the replicas for each partition to different racks if possible
    *
+   * 1. 平均分配
+   * 2. 对于同一个分区，其他副本尽量分散在不同的broker上
+   * 3. 如果有rack信息，则尽量将同一个分区的副本分配到不同的rack上
+   *
    * To achieve this goal for replica assignment without considering racks, we:
    * 1. Assign the first replica of each partition by round-robin, starting from a random position in the broker list.
    * 2. Assign the remaining replicas of each partition with an increasing shift.
+   *
+   * 1. 轮询方式，从broker列表的随机位置开始
+   * 2. 增量方式，每个分区的副本依次增加
+   *
    *
    * Here is an example of assigning
    * broker-0  broker-1  broker-2  broker-3  broker-4
@@ -113,8 +121,10 @@ object AdminUtils extends Logging {
       throw new AdminOperationException("number of partitions must be larger than 0")
     if (replicationFactor <= 0)
       throw new AdminOperationException("replication factor must be larger than 0")
-    if (replicationFactor > brokerMetadatas.size)
+    if (replicationFactor > brokerMetadatas.size) {
       throw new AdminOperationException(s"replication factor: $replicationFactor larger than available brokers: ${brokerMetadatas.size}")
+    }
+    //需要考虑机架吗?
     if (brokerMetadatas.forall(_.rack.isEmpty))
       assignReplicasToBrokersRackUnaware(nPartitions, replicationFactor, brokerMetadatas.map(_.id), fixedStartIndex,
         startPartitionId)
@@ -133,16 +143,23 @@ object AdminUtils extends Logging {
                                                  startPartitionId: Int): Map[Int, Seq[Int]] = {
     val ret = mutable.Map[Int, Seq[Int]]()
     val brokerArray = brokerList.toArray
+    //随机一个其实位置
     val startIndex = if (fixedStartIndex >= 0) fixedStartIndex else rand.nextInt(brokerArray.length)
+    //currentPartionId就是0
     var currentPartitionId = math.max(0, startPartitionId)
+    //还是随机的一个值
     var nextReplicaShift = if (fixedStartIndex >= 0) fixedStartIndex else rand.nextInt(brokerArray.length)
     for (_ <- 0 until nPartitions) {
-      if (currentPartitionId > 0 && (currentPartitionId % brokerArray.length == 0))
+      if (currentPartitionId > 0 && (currentPartitionId % brokerArray.length == 0)) {
         nextReplicaShift += 1
+      }
+      //第一个replica的位置
       val firstReplicaIndex = (currentPartitionId + startIndex) % brokerArray.length
+      //取出这个位置的replica
       val replicaBuffer = mutable.ArrayBuffer(brokerArray(firstReplicaIndex))
       for (j <- 0 until replicationFactor - 1)
         replicaBuffer += brokerArray(replicaIndex(firstReplicaIndex, nextReplicaShift, j, brokerArray.length))
+
       ret.put(currentPartitionId, replicaBuffer)
       currentPartitionId += 1
     }
@@ -377,8 +394,10 @@ object AdminUtils extends Logging {
 
   def getBrokerMetadatas(zkUtils: ZkUtils, rackAwareMode: RackAwareMode = RackAwareMode.Enforced,
                         brokerList: Option[Seq[Int]] = None): Seq[BrokerMetadata] = {
+    //从zk拿到所有的brokerids信息
     val allBrokers = zkUtils.getAllBrokersInCluster()
     val brokers = brokerList.map(brokerIds => allBrokers.filter(b => brokerIds.contains(b.id))).getOrElse(allBrokers)
+    //强制获取对应的机架的broker
     val brokersWithRack = brokers.filter(_.rack.nonEmpty)
     if (rackAwareMode == RackAwareMode.Enforced && brokersWithRack.nonEmpty && brokersWithRack.size < brokers.size) {
       throw new AdminOperationException("Not all brokers have rack information. Add --disable-rack-aware in command line" +
@@ -400,6 +419,7 @@ object AdminUtils extends Logging {
                   topicConfig: Properties = new Properties,
                   rackAwareMode: RackAwareMode = RackAwareMode.Enforced) {
     val brokerMetadatas = getBrokerMetadatas(zkUtils, rackAwareMode)
+    //从名称中来分析，像是把replica分配给对应的broker
     val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitions, replicationFactor)
     AdminUtils.createOrUpdateTopicPartitionAssignmentPathInZK(zkUtils, topic, replicaAssignment, topicConfig)
   }
@@ -413,12 +433,15 @@ object AdminUtils extends Logging {
     Topic.validate(topic)
     require(partitionReplicaAssignment.values.map(_.size).toSet.size == 1, "All partitions should have the same number of replicas.")
 
+    //获取zk中的topic的路径
     val topicPath = getTopicPath(topic)
 
+    //不是更新
     if (!update) {
-      if (zkUtils.zkClient.exists(topicPath))
+      if (zkUtils.zkClient.exists(topicPath)) {
         throw new TopicExistsException("Topic \"%s\" already exists.".format(topic))
-      else if (Topic.hasCollisionChars(topic)) {
+      } else if (Topic.hasCollisionChars(topic)) {
+        //有没有.是否和已经有的topic名称起了冲突
         val allTopics = zkUtils.getAllTopics()
         val collidingTopics = allTopics.filter(t => Topic.hasCollision(topic, t))
         if (collidingTopics.nonEmpty) {
@@ -427,8 +450,10 @@ object AdminUtils extends Logging {
       }
     }
 
+    //确保每个partition的replica都是分配到一台独立的broker上
     partitionReplicaAssignment.values.foreach(reps => require(reps.size == reps.toSet.size, "Duplicate replica assignment found: "  + partitionReplicaAssignment))
 
+    //更新对应topic的元数据
     // Configs only matter if a topic is being created. Changing configs via AlterTopic is not supported
     if (!update) {
       // write out the config if there is any, this isn't transactional with the partition assignments
@@ -443,8 +468,10 @@ object AdminUtils extends Logging {
   private def writeTopicPartitionAssignment(zkUtils: ZkUtils, topic: String, replicaAssignment: Map[Int, Seq[Int]], update: Boolean) {
     try {
       val zkPath = getTopicPath(topic)
+      //简单来说就是 {"0" => [0,1,2]}
       val jsonPartitionData = zkUtils.replicaAssignmentZkData(replicaAssignment.map(e => (e._1.toString -> e._2)))
 
+      //更新元数据
       if (!update) {
         info("Topic creation " + jsonPartitionData.toString)
         zkUtils.createPersistentPath(zkPath, jsonPartitionData)
@@ -512,6 +539,7 @@ object AdminUtils extends Logging {
       config
     }
     val map = Map("version" -> 1, "config" -> configMap)
+    //configs/topic/$topic
     zkUtils.updatePersistentPath(getEntityConfigPath(entityType, entityName), Json.encode(map))
   }
 

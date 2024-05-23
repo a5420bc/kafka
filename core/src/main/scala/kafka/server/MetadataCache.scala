@@ -71,12 +71,15 @@ private[server] class MetadataCache(brokerId: Int) extends Logging {
   private def getPartitionMetadata(topic: String, protocol: SecurityProtocol, errorUnavailableEndpoints: Boolean): Option[Iterable[MetadataResponse.PartitionMetadata]] = {
     cache.get(topic).map { partitions =>
       partitions.map { case (partitionId, partitionState) =>
+        //构造topic partition
         val topicPartition = TopicAndPartition(topic, partitionId)
 
         val leaderAndIsr = partitionState.leaderIsrAndControllerEpoch.leaderAndIsr
+        //拿到leader node信息
         val maybeLeader = getAliveEndpoint(leaderAndIsr.leader, protocol)
 
         val replicas = partitionState.allReplicas
+        //获取副本的node信息
         val replicaInfo = getEndpoints(replicas, protocol, errorUnavailableEndpoints)
 
         maybeLeader match {
@@ -87,12 +90,15 @@ private[server] class MetadataCache(brokerId: Int) extends Logging {
 
           case Some(leader) =>
             val isr = leaderAndIsr.isr
+            //获取leader的isr node信息
             val isrInfo = getEndpoints(isr, protocol, errorUnavailableEndpoints)
 
+            //说明有副本down
             if (replicaInfo.size < replicas.size) {
               debug(s"Error while fetching metadata for $topicPartition: replica information not available for " +
                 s"following brokers ${replicas.filterNot(replicaInfo.map(_.id).contains).mkString(",")}")
 
+              //还是返回了信息
               new MetadataResponse.PartitionMetadata(Errors.REPLICA_NOT_AVAILABLE, partitionId, leader,
                 replicaInfo.asJava, isrInfo.asJava)
             } else if (isrInfo.size < isr.size) {

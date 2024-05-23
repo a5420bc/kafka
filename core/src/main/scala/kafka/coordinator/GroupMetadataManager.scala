@@ -229,6 +229,7 @@ class GroupMetadataManager(val brokerId: Int,
 
   def store(delayedAppend: DelayedStore) {
     // call replica manager to append the group message
+    //先持久化写入磁盘，再更新缓存
     replicaManager.appendMessages(
       config.offsetCommitTimeoutMs.toLong,
       config.offsetCommitRequiredAcks,
@@ -277,13 +278,15 @@ class GroupMetadataManager(val brokerId: Int,
       // the offset and metadata to cache if the append status has no error
       val status = responseStatus(offsetTopicPartition)
 
-      val responseCode =
+      val responseCode = {
+        //写入缓存
         if (status.errorCode == Errors.NONE.code) {
           filteredOffsetMetadata.foreach { case (topicAndPartition, offsetAndMetadata) =>
             putOffset(GroupTopicPartition(groupId, topicAndPartition), offsetAndMetadata)
           }
           Errors.NONE.code
         } else {
+          //返回错误码
           debug("Offset commit %s from group %s consumer %s with generation %d failed when appending to log due to %s"
             .format(filteredOffsetMetadata, groupId, consumerId, generationId, Errors.forCode(status.errorCode).exceptionName))
 
@@ -299,6 +302,7 @@ class GroupMetadataManager(val brokerId: Int,
           else
             status.errorCode
         }
+      }
 
 
       // compute the final error codes for the commit response
@@ -323,6 +327,8 @@ class GroupMetadataManager(val brokerId: Int,
   def getOffsets(group: String, topicPartitions: Seq[TopicPartition]): Map[TopicPartition, OffsetFetchResponse.PartitionData] = {
     trace("Getting offsets %s for group %s.".format(topicPartitions, group))
 
+    //TODO offsetcache是在哪里写入的呢??
+    //实际上都是从缓存去拿数据了
     if (isGroupLocal(group)) {
       if (topicPartitions.isEmpty) {
         // Return offsets for all partitions owned by this consumer group. (this only applies to consumers that commit offsets to Kafka.)
@@ -347,14 +353,20 @@ class GroupMetadataManager(val brokerId: Int,
   /**
    * Asynchronously read the partition from the offsets topic and populate the cache
    */
+  //TODO 先不关心到底是怎么被调用的
   def loadGroupsForPartition(offsetsPartition: Int,
                              onGroupLoaded: GroupMetadata => Unit) {
     val topicPartition = TopicAndPartition(TopicConstants.GROUP_METADATA_TOPIC_NAME, offsetsPartition)
+    //设置一个任务去更新offsetcache
     scheduler.schedule(topicPartition.toString, loadGroupsAndOffsets)
 
+    //因为offset实时从__consumer_offset中获取应该是一个比较费时的操作
+    //所以当前版本呢采用定期更新的方式
     def loadGroupsAndOffsets() {
       info("Loading offsets and group metadata from " + topicPartition)
 
+      //并发控制
+      //TODO 为什么会有并发问题
       loadingPartitions synchronized {
         if (loadingPartitions.contains(offsetsPartition)) {
           info("Offset load from %s already in progress.".format(topicPartition))
@@ -375,18 +387,23 @@ class GroupMetadataManager(val brokerId: Int,
               val loadedGroups = mutable.Map[String, GroupMetadata]()
               val removedGroups = mutable.Set[String]()
 
+              //当前最早的索引是否比__consumer_offset的索引小
               while (currOffset < getHighWatermark(offsetsPartition) && !shuttingDown.get()) {
                 buffer.clear()
+                //读取一批数据
                 val messages = log.read(currOffset, config.loadBufferSize).messageSet.asInstanceOf[FileMessageSet]
+                //写入到buffer中
                 messages.readInto(buffer, 0)
                 val messageSet = new ByteBufferMessageSet(buffer)
                 messageSet.foreach { msgAndOffset =>
                   require(msgAndOffset.message.key != null, "Offset entry key should not be null")
+                  //读取消息的key
                   val baseKey = GroupMetadataManager.readMessageKey(msgAndOffset.message.key)
 
                   if (baseKey.isInstanceOf[OffsetKey]) {
                     // load offset
                     val key = baseKey.key.asInstanceOf[GroupTopicPartition]
+                    //墓碑标记
                     if (msgAndOffset.message.payload == null) {
                       if (offsetsCache.remove(key) != null)
                         trace("Removed offset for %s due to tombstone entry.".format(key))
@@ -407,6 +424,7 @@ class GroupMetadataManager(val brokerId: Int,
                       trace("Loaded offset %s for %s.".format(value, key))
                     }
                   } else {
+                    //TODO 暂时先知道有这个玩意 group key
                     // load group metadata
                     val groupId = baseKey.key.asInstanceOf[String]
                     val groupMetadata = GroupMetadataManager.readGroupMessageValue(groupId, msgAndOffset.message.payload)
@@ -430,6 +448,7 @@ class GroupMetadataManager(val brokerId: Int,
                   debug(s"Attempt to load group ${group.groupId} from log with generation ${group.generationId} failed " +
                     s"because there is already a cached group with generation ${currentGroup.generationId}")
                 else
+                  //回调函数的执行
                   onGroupLoaded(group)
               }
 

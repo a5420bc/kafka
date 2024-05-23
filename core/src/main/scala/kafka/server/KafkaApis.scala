@@ -73,22 +73,36 @@ class KafkaApis(val requestChannel: RequestChannel,
       trace("Handling request:%s from connection %s;securityProtocol:%s,principal:%s".
         format(request.requestDesc(true), request.connectionId, request.securityProtocol, request.session.principal))
       ApiKeys.forId(request.requestId) match {
+        //写入数据协议
         case ApiKeys.PRODUCE => handleProducerRequest(request)
+        //数据拉取协议
         case ApiKeys.FETCH => handleFetchRequest(request)
+        //列出当前offset有效分段 ，在truncate log时使用
         case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request)
         case ApiKeys.METADATA => handleTopicMetadataRequest(request)
+        //broker的leader选举
         case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request)
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request)
+        //TODO 更新元数据请求
         case ApiKeys.UPDATE_METADATA_KEY => handleUpdateMetadataRequest(request)
         case ApiKeys.CONTROLLED_SHUTDOWN_KEY => handleControlledShutdownRequest(request)
+        //偏移量提交协议
         case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request)
+        //偏移量获取协议
         case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request)
+        //组协调者调整
         case ApiKeys.GROUP_COORDINATOR => handleGroupCoordinatorRequest(request)
+        //加入对应的组
         case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request)
+        //心跳协议
         case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request)
+        //离开分组
         case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request)
+        //组同步分配方案的请求
         case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request)
+        //根据提供的groupid返回消费组的分配信息
         case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupRequest(request)
+        //列出当前的broker负责哪些组
         case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request)
         case ApiKeys.SASL_HANDSHAKE => handleSaslHandshakeRequest(request)
         case ApiKeys.API_VERSIONS => handleApiVersionsRequest(request)
@@ -214,6 +228,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     val header = request.header
     val offsetCommitRequest = request.body.asInstanceOf[OffsetCommitRequest]
 
+    //当前的groupid没有权限对该topic进行操作
     // reject the request if not authorized to the group
     if (!authorize(request.session, Read, new Resource(Group, offsetCommitRequest.groupId))) {
       val errorCode = new JShort(Errors.GROUP_AUTHORIZATION_FAILED.code)
@@ -626,9 +641,11 @@ class KafkaApis(val requestChannel: RequestChannel,
                           replicationFactor: Int,
                           properties: Properties = new Properties()): MetadataResponse.TopicMetadata = {
     try {
+      //创建topic
       AdminUtils.createTopic(zkUtils, topic, numPartitions, replicationFactor, properties, RackAwareMode.Safe)
       info("Auto creation of topic %s with %d partitions and replication factor %d is successful"
         .format(topic, numPartitions, replicationFactor))
+      //TODO 这里为啥要报错呢
       new MetadataResponse.TopicMetadata(Errors.LEADER_NOT_AVAILABLE, topic, common.Topic.isInternal(topic),
         java.util.Collections.emptyList())
     } catch {
@@ -643,11 +660,13 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   private def createGroupMetadataTopic(): MetadataResponse.TopicMetadata = {
     val aliveBrokers = metadataCache.getAliveBrokers
+    //对于metadata的partition来说，要么可以用默认值，要么就用alive broker的数量
     val offsetsTopicReplicationFactor =
       if (aliveBrokers.nonEmpty)
         Math.min(config.offsetsTopicReplicationFactor.toInt, aliveBrokers.length)
       else
         config.offsetsTopicReplicationFactor.toInt
+    //TODO 很奇怪诶，为什么这里会操作zk
     createTopic(TopicConstants.GROUP_METADATA_TOPIC_NAME, config.offsetsTopicPartitions,
       offsetsTopicReplicationFactor, coordinator.offsetsTopicConfigs)
   }
@@ -754,6 +773,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     val responseHeader = new ResponseHeader(header.correlationId)
     val offsetFetchResponse =
     // reject the request if not authorized to the group
+    //消费组未授权直接就不能消费了
     if (!authorize(request.session, Read, new Resource(Group, offsetFetchRequest.groupId))) {
       val unauthorizedGroupResponse = new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.GROUP_AUTHORIZATION_FAILED.code)
       val results = offsetFetchRequest.partitions.asScala.map { topicPartition => (topicPartition, unauthorizedGroupResponse)}.toMap
@@ -766,6 +786,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       val unauthorizedStatus = unauthorizedTopicPartitions.map(topicPartition => (topicPartition, unauthorizedTopicResponse)).toMap
       val unknownTopicPartitionResponse = new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.UNKNOWN_TOPIC_OR_PARTITION.code)
 
+      //版本0是直接写zookeeper的就不分析了
       if (header.apiVersion == 0) {
         // version 0 reads offsets from ZK
         val responseInfo = authorizedTopicPartitions.map { topicPartition =>
@@ -790,6 +811,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }.toMap
         new OffsetFetchResponse((responseInfo ++ unauthorizedStatus).asJava)
       } else {
+        //从kafka的__consumer_offset处理的
         // version 1 reads offsets from Kafka;
         val offsets = coordinator.handleFetchOffsets(offsetFetchRequest.groupId, authorizedTopicPartitions).toMap
 
@@ -812,18 +834,22 @@ class KafkaApis(val requestChannel: RequestChannel,
       val responseBody = new GroupCoordinatorResponse(Errors.GROUP_AUTHORIZATION_FAILED.code, Node.noNode)
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
     } else {
+      //获取partition的分区位置(__consumer_offset的分区)
       val partition = coordinator.partitionFor(groupCoordinatorRequest.groupId)
 
       // get metadata (and create the topic if necessary)
+      //TODO 那我就只能假设不会create咯
       val offsetsTopicMetadata = getOrCreateGroupMetadataTopic(request.securityProtocol)
 
       val responseBody = if (offsetsTopicMetadata.error != Errors.NONE) {
         new GroupCoordinatorResponse(Errors.GROUP_COORDINATOR_NOT_AVAILABLE.code, Node.noNode)
       } else {
+        //找到负责这个内部topic的leader
         val coordinatorEndpoint = offsetsTopicMetadata.partitionMetadata().asScala
           .find(_.partition == partition)
           .map(_.leader())
 
+        //把这个leader给返回过去
         coordinatorEndpoint match {
           case Some(endpoint) if !endpoint.isEmpty =>
             new GroupCoordinatorResponse(Errors.NONE.code, endpoint)
@@ -891,6 +917,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, responseHeader, responseBody)))
     }
 
+    //未授权
     if (!authorize(request.session, Read, new Resource(Group, joinGroupRequest.groupId()))) {
       val responseBody = new JoinGroupResponse(
         Errors.GROUP_AUTHORIZATION_FAILED.code,
@@ -934,6 +961,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         syncGroupRequest.groupId(),
         syncGroupRequest.generationId(),
         syncGroupRequest.memberId(),
+        //具体的分配方案
         syncGroupRequest.groupAssignment().mapValues(Utils.toArray(_)),
         sendResponseCallback
       )

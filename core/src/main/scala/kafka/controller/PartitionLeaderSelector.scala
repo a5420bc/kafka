@@ -53,14 +53,18 @@ class OfflinePartitionLeaderSelector(controllerContext: ControllerContext, confi
   def selectLeader(topicAndPartition: TopicAndPartition, currentLeaderAndIsr: LeaderAndIsr): (LeaderAndIsr, Seq[Int]) = {
     controllerContext.partitionReplicaAssignment.get(topicAndPartition) match {
       case Some(assignedReplicas) =>
+        //找到assignedReplicas中存活的broker
         val liveAssignedReplicas = assignedReplicas.filter(r => controllerContext.liveBrokerIds.contains(r))
+        //找到ISR的存活节点
         val liveBrokersInIsr = currentLeaderAndIsr.isr.filter(r => controllerContext.liveBrokerIds.contains(r))
         val currentLeaderEpoch = currentLeaderAndIsr.leaderEpoch
         val currentLeaderIsrZkPathVersion = currentLeaderAndIsr.zkVersion
         val newLeaderAndIsr = liveBrokersInIsr.isEmpty match {
+          //所有的ISR中没有存活的broker
           case true =>
             // Prior to electing an unclean (i.e. non-ISR) leader, ensure that doing so is not disallowed by the configuration
             // for unclean leader election.
+            //看看topic的配置是否允许unclean leader election
             if (!LogConfig.fromProps(config.originals, AdminUtils.fetchEntityConfig(controllerContext.zkUtils,
               ConfigType.Topic, topicAndPartition.topic)).uncleanLeaderElectionEnable) {
               throw new NoReplicaOnlineException(("No broker in ISR for partition " +
@@ -70,13 +74,16 @@ class OfflinePartitionLeaderSelector(controllerContext: ControllerContext, confi
 
             debug("No broker in ISR is alive for %s. Pick the leader from the alive assigned replicas: %s"
               .format(topicAndPartition, liveAssignedReplicas.mkString(",")))
+            //AR是否是空的
             liveAssignedReplicas.isEmpty match {
+              //啥都没有选举无法成功
               case true =>
                 throw new NoReplicaOnlineException(("No replica for partition " +
                   "%s is alive. Live brokers are: [%s],".format(topicAndPartition, controllerContext.liveBrokerIds)) +
                   " Assigned replicas are: [%s]".format(assignedReplicas))
               case false =>
                 ControllerStats.uncleanLeaderElectionRate.mark()
+                //找第一个档领导咯
                 val newLeader = liveAssignedReplicas.head
                 warn("No broker in ISR is alive for %s. Elect leader %d from live brokers %s. There's potential data loss."
                      .format(topicAndPartition, newLeader, liveAssignedReplicas.mkString(",")))
@@ -152,6 +159,7 @@ with Logging {
       info("Current leader %d for partition %s is not the preferred replica.".format(currentLeader, topicAndPartition) +
         " Trigerring preferred replica leader election")
       // check if preferred replica is not the current leader and is alive and in the isr
+      //TODO 怎么感觉就是换了一个leader而已
       if (controllerContext.liveBrokerIds.contains(preferredReplica) && currentLeaderAndIsr.isr.contains(preferredReplica)) {
         (new LeaderAndIsr(preferredReplica, currentLeaderAndIsr.leaderEpoch + 1, currentLeaderAndIsr.isr,
           currentLeaderAndIsr.zkVersion + 1), assignedReplicas)

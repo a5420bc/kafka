@@ -173,6 +173,7 @@ class Log(val dir: File,
       if(filename.endsWith(IndexFileSuffix)) {
         // if it is an index file, make sure it has a corresponding .log file
         val logFile = new File(file.getAbsolutePath.replace(IndexFileSuffix, LogFileSuffix))
+        //为啥会有这种情况呢
         if(!logFile.exists) {
           warn("Found an orphaned index file, %s, with no corresponding log file.".format(file.getAbsolutePath))
           file.delete()
@@ -180,6 +181,7 @@ class Log(val dir: File,
       } else if(filename.endsWith(LogFileSuffix)) {
         // if its a log file, load the corresponding log segment
         val start = filename.substring(0, filename.length - LogFileSuffix.length).toLong
+        //索引文件
         val indexFile = Log.indexFilename(dir, start)
         val segment = new LogSegment(dir = dir,
                                      startOffset = start,
@@ -191,11 +193,13 @@ class Log(val dir: File,
 
         if(indexFile.exists()) {
           try {
+              //检查下index是不是可以使用
               segment.index.sanityCheck()
           } catch {
             case e: java.lang.IllegalArgumentException =>
               warn("Found a corrupted index file, %s, deleting and rebuilding index...".format(indexFile.getAbsolutePath))
               indexFile.delete()
+              //从log文件中直接重建index
               segment.recover(config.maxMessageSize)
           }
         }
@@ -259,6 +263,7 @@ class Log(val dir: File,
     }
 
     // okay we need to actually recovery this log
+    //从检查点开始检查日志
     val unflushed = logSegments(this.recoveryPoint, Long.MaxValue).iterator
     while(unflushed.hasNext) {
       val curr = unflushed.next
@@ -320,10 +325,12 @@ class Log(val dir: File,
     val appendInfo = analyzeAndValidateMessageSet(messages)
 
     // if we have any valid messages, append them to the log
+    //没有任何合法的数据
     if (appendInfo.shallowCount == 0)
       return appendInfo
 
     // trim any invalid bytes or partial messages before appending it to the on-disk log
+    //返回一个合法大小的buffer
     var validMessages = trimInvalidBytes(messages, appendInfo)
 
     try {
@@ -356,6 +363,7 @@ class Log(val dir: File,
           // format conversion)
           if (messageSizesMaybeChanged) {
             for (messageAndOffset <- validMessages.shallowIterator) {
+              //重新检查每条消息的格式大小
               if (MessageSet.entrySize(messageAndOffset.message) > config.maxMessageSize) {
                 // we record the original message set size instead of the trimmed size
                 // to be consistent with pre-compression bytesRejectedRate recording
@@ -438,6 +446,7 @@ class Log(val dir: File,
 
       // Check if the message sizes are valid.
       val messageSize = MessageSet.entrySize(m)
+      //1. 某条消息实在是太大了
       if(messageSize > config.maxMessageSize) {
         BrokerTopicStats.getBrokerTopicStats(topicAndPartition.topic).bytesRejectedRate.mark(messages.sizeInBytes)
         BrokerTopicStats.getBrokerAllTopicsStats.bytesRejectedRate.mark(messages.sizeInBytes)
@@ -446,6 +455,7 @@ class Log(val dir: File,
       }
 
       // check the validity of the message by checking CRC
+      //CRC是否合法呢
       m.ensureValid()
 
       shallowMessageCount += 1
@@ -497,13 +507,17 @@ class Log(val dir: File,
 
     // Because we don't use lock for reading, the synchronization is a little bit tricky.
     // We create the local variables to avoid race conditions with updates to the log.
+    //当前的nextOffset
     val currentNextOffsetMetadata = nextOffsetMetadata
     val next = currentNextOffsetMetadata.messageOffset
+    //没有数据啦
     if(startOffset == next)
       return FetchDataInfo(currentNextOffsetMetadata, MessageSet.Empty)
 
+    //找到之后的segments
     var entry = segments.floorEntry(startOffset)
 
+    //找不到
     // attempt to read beyond the log end offset is an error
     if(startOffset > next || entry == null)
       throw new OffsetOutOfRangeException("Request for offset %d but we only have log segments in the range %d to %d.".format(startOffset, segments.firstKey, next))
@@ -516,7 +530,9 @@ class Log(val dir: File,
       // the message is appended but before the nextOffsetMetadata is updated. In that case the second fetch may
       // cause OffsetOutOfRangeException. To solve that, we cap the reading up to exposed position instead of the log
       // end of the active segment.
+      //对于当前的这个entry最多能够读取多少条内容
       val maxPosition = {
+        //已经是最后一项，也就是active entry
         if (entry == segments.lastEntry) {
           val exposedPos = nextOffsetMetadata.relativePositionInSegment.toLong
           // Check the segment again in case a new segment has just rolled out.
@@ -530,6 +546,7 @@ class Log(val dir: File,
         }
       }
       val fetchInfo = entry.getValue.read(startOffset, maxOffset, maxLength, maxPosition)
+      //要到下一个segment去找了
       if(fetchInfo == null) {
         entry = segments.higherEntry(entry.getKey)
       } else {

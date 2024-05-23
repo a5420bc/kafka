@@ -136,6 +136,7 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
   def add(memberId: String, member: MemberMetadata) {
     assert(supportsProtocols(member.protocols))
 
+    //第一个就是leader啦
     if (leaderId == null)
       leaderId = memberId
     members.put(memberId, member)
@@ -176,6 +177,7 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
     state = groupState
   }
 
+  //选出大家拥有最多的那个协议，就是要使用的分配协议了
   def selectProtocol: String = {
     if (members.isEmpty)
       throw new IllegalStateException("Cannot select protocol for empty group")
@@ -207,7 +209,9 @@ private[coordinator] class GroupMetadata(val groupId: String, val protocolType: 
   def initNextGeneration() = {
     assert(notYetRejoinedMembers == List.empty[MemberMetadata])
     generationId += 1
+    //选择确定的协议
     protocol = selectProtocol
+    //转化组的状态
     transitionTo(AwaitingSync)
   }
 

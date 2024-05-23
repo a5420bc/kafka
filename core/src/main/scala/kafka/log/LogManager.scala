@@ -56,7 +56,9 @@ class LogManager(val logDirs: Array[File],
   private val logs = new Pool[TopicAndPartition, Log]()
 
   createAndValidateLogDirs(logDirs)
+  //为每一个目录都创建一个文件锁
   private val dirLocks = lockLogDirs(logDirs)
+  //加载检查点文件(所有的dirs的checkpoint都在这里)
   private val recoveryPointCheckpoints = logDirs.map(dir => (dir, new OffsetCheckpoint(new File(dir, RecoveryPointCheckpointFile)))).toMap
   loadLogs()
 
@@ -112,12 +114,16 @@ class LogManager(val logDirs: Array[File],
     val threadPools = mutable.ArrayBuffer.empty[ExecutorService]
     val jobs = mutable.Map.empty[File, Seq[Future[_]]]
 
+    //准备并行任务
     for (dir <- this.logDirs) {
+      //开启任务
       val pool = Executors.newFixedThreadPool(ioThreads)
       threadPools.append(pool)
 
+      //日志删除文件
       val cleanShutdownFile = new File(dir, Log.CleanShutdownFile)
 
+      //说明程序是正常关闭的，直接跳过recover的过程
       if (cleanShutdownFile.exists) {
         debug(
           "Found clean shutdown file. " +
@@ -185,6 +191,7 @@ class LogManager(val logDirs: Array[File],
    *  Start the background threads to flush logs and do log cleanup
    */
   def startup() {
+    //启动几个后台的进程
     /* Schedule the cleanup task to delete old logs */
     if(scheduler != null) {
       info("Starting log cleanup with a period of %d ms.".format(retentionCheckMs))
@@ -283,10 +290,12 @@ class LogManager(val logDirs: Array[File],
       if (log != null) {
         //May need to abort and pause the cleaning of the log, and resume after truncation is done.
         val needToStopCleaner: Boolean = (truncateOffset < log.activeSegment.baseOffset)
+        //cleaner需要先暂停清理，因为truncate在工作了
         if (needToStopCleaner && cleaner != null)
           cleaner.abortAndPauseCleaning(topicAndPartition)
         log.truncateTo(truncateOffset)
         if (needToStopCleaner && cleaner != null) {
+          //猜测是清理线程的checkpoint
           cleaner.maybeTruncateCheckpoint(log.dir.getParentFile, topicAndPartition, log.activeSegment.baseOffset)
           cleaner.resumeCleaning(topicAndPartition)
         }
@@ -327,8 +336,10 @@ class LogManager(val logDirs: Array[File],
    * Make a checkpoint for all logs in provided directory.
    */
   private def checkpointLogsInDir(dir: File): Unit = {
+    //这里就是该dirs下的所有topic-partition
     val recoveryPoints = this.logsByDir.get(dir.toString)
     if (recoveryPoints.isDefined) {
+      //每个文件都写入检查点日志文件中去
       this.recoveryPointCheckpoints(dir).write(recoveryPoints.get.mapValues(_.recoveryPoint))
     }
   }

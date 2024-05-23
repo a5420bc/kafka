@@ -24,6 +24,7 @@ import kafka.common.KafkaException
 
 import java.util.concurrent.atomic.AtomicLong
 
+//replica是对具体的副本的建模，副本的leo、hw信息都实际上是通过这个来更新的
 class Replica(val brokerId: Int,
               val partition: Partition,
               time: Time = SystemTime,
@@ -50,12 +51,14 @@ class Replica(val brokerId: Int,
   def lastCaughtUpTimeMs = lastCaughtUpTimeMsUnderlying.get()
 
   def updateLogReadResult(logReadResult : LogReadResult) {
+    //内存中更新对应的LEO
     logEndOffset = logReadResult.info.fetchOffsetMetadata
 
     /* If the request read up to the log end offset snapshot when the read was initiated,
      * set the lastCaughtUpTimeMsUnderlying to the current time.
      * This means that the replica is fully caught up.
      */
+    //已经读取到了最新的内容了，更新一下lastCaughtUpTime
     if(logReadResult.isReadFromLogEnd) {
       lastCaughtUpTimeMsUnderlying.set(time.milliseconds)
     }

@@ -132,6 +132,7 @@ class FileMessageSet private[kafka](@volatile var file: File,
     val size = sizeInBytes()
     while(position + MessageSet.LogOverhead < size) {
       buffer.rewind()
+      //读取offset的过程
       channel.read(buffer, position)
       if(buffer.hasRemaining)
         throw new IllegalStateException("Failed to read complete buffer for targetOffset %d startPosition %d in %s"
@@ -140,9 +141,12 @@ class FileMessageSet private[kafka](@volatile var file: File,
       val offset = buffer.getLong()
       if(offset >= targetOffset)
         return OffsetPosition(offset, position)
+      //读取messageSize的过程
       val messageSize = buffer.getInt()
-      if(messageSize < Message.MinMessageOverhead)
+      if(messageSize < Message.MinMessageOverhead) {
         throw new IllegalStateException("Invalid message size: " + messageSize)
+      }
+      //跳过position大小
       position += MessageSet.LogOverhead + messageSize
     }
     null
@@ -264,6 +268,7 @@ class FileMessageSet private[kafka](@volatile var file: File,
           return allDone()
 
         sizeOffsetBuffer.rewind()
+        //offset + size
         val offset = sizeOffsetBuffer.getLong()
         val size = sizeOffsetBuffer.getInt()
         if(size < Message.MinMessageOverhead || location + sizeOffsetLength + size > end)

@@ -75,6 +75,10 @@ class OffsetCheckpoint(val file: File) extends Logging {
     }
   }
 
+  //checkpoint文件格式如下:
+  //版本好\r\n
+  //分区数\r\n
+  //topic partition offset\r\n
   def read(): Map[TopicAndPartition, Long] = {
 
     def malformedLineException(line: String) =

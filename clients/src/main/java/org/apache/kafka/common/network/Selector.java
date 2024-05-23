@@ -305,6 +305,7 @@ public class Selector implements Selectable {
             try {
 
                 /* complete any connections that have finished their handshake (either normally or immediately) */
+                //建立连接
                 if (isImmediatelyConnected || key.isConnectable()) {
                     if (channel.finishConnect()) {
                         this.connected.add(channel.id());
@@ -314,6 +315,7 @@ public class Selector implements Selectable {
                 }
 
                 /* if channel is not ready finish prepare */
+                //握手和认证
                 if (channel.isConnected() && !channel.ready())
                     channel.prepare();
 
@@ -552,6 +554,7 @@ public class Selector implements Selectable {
      */
     private void addToCompletedReceives() {
         if (!this.stagedReceives.isEmpty()) {
+            //从每个dequeue中拉取一个
             Iterator<Map.Entry<KafkaChannel, Deque<NetworkReceive>>> iter = this.stagedReceives.entrySet().iterator();
             while (iter.hasNext()) {
                 Map.Entry<KafkaChannel, Deque<NetworkReceive>> entry = iter.next();

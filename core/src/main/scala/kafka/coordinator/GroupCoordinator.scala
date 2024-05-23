@@ -105,15 +105,20 @@ class GroupCoordinator(val brokerId: Int,
                       protocols: List[(String, Array[Byte])],
                       responseCallback: JoinCallback) {
     if (!isActive.get) {
+      //是否启动完成
       responseCallback(joinError(memberId, Errors.GROUP_COORDINATOR_NOT_AVAILABLE.code))
     } else if (!validGroupId(groupId)) {
+      //组id是否合法
       responseCallback(joinError(memberId, Errors.INVALID_GROUP_ID.code))
     } else if (!isCoordinatorForGroup(groupId)) {
+      //是否是改组的协调者
       responseCallback(joinError(memberId, Errors.NOT_COORDINATOR_FOR_GROUP.code))
     } else if (isCoordinatorLoadingInProgress(groupId)) {
+      //是否还在加载offset
       responseCallback(joinError(memberId, Errors.GROUP_LOAD_IN_PROGRESS.code))
     } else if (sessionTimeoutMs < groupConfig.groupMinSessionTimeoutMs ||
                sessionTimeoutMs > groupConfig.groupMaxSessionTimeoutMs) {
+      //超时了
       responseCallback(joinError(memberId, Errors.INVALID_SESSION_TIMEOUT.code))
     } else {
       // only try to create the group if the group is not unknown AND
@@ -159,22 +164,29 @@ class GroupCoordinator(val brokerId: Int,
             responseCallback(joinError(memberId, Errors.UNKNOWN_MEMBER_ID.code))
 
           case PreparingRebalance =>
+            //这个是新来的
             if (memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID) {
               addMemberAndRebalance(sessionTimeoutMs, clientId, clientHost, protocols, group, responseCallback)
             } else {
+              //之前加入过
               val member = group.get(memberId)
               updateMemberAndRebalance(group, member, protocols, responseCallback)
             }
 
           case AwaitingSync =>
+            //新成员
+            //此时又有新成员，将状态退回到PrepareRebalance
             if (memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID) {
               addMemberAndRebalance(sessionTimeoutMs, clientId, clientHost, protocols, group, responseCallback)
             } else {
+              //老成员
               val member = group.get(memberId)
+              //组支持的分配协议还是和之前一样
               if (member.matches(protocols)) {
                 // member is joining with the same metadata (which could be because it failed to
                 // receive the initial JoinGroup response), so just return current group information
                 // for the current generation.
+                //说明可能是之前的JoinGroup的返回丢失了，需要重新发送
                 responseCallback(JoinGroupResult(
                   members = if (memberId == group.leaderId) {
                     group.currentMemberMetadata
@@ -192,12 +204,15 @@ class GroupCoordinator(val brokerId: Int,
               }
             }
 
+          //初始化完成后组必然是处于这个状态
           case Stable =>
             if (memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID) {
               // if the member id is unknown, register the member to the group
               addMemberAndRebalance(sessionTimeoutMs, clientId, clientHost, protocols, group, responseCallback)
             } else {
               val member = group.get(memberId)
+              //1. leader可能单纯的改变了分配的策略
+              //2. 组成员改变了能够接受的分配协议
               if (memberId == group.leaderId || !member.matches(protocols)) {
                 // force a rebalance if a member has changed metadata or if the leader sends JoinGroup.
                 // The latter allows the leader to trigger rebalances for changes affecting assignment
@@ -206,6 +221,7 @@ class GroupCoordinator(val brokerId: Int,
               } else {
                 // for followers with no actual change to their metadata, just return group information
                 // for the current generation which will allow them to issue SyncGroup
+                //使其可以进入到SyncGroup的环节
                 responseCallback(JoinGroupResult(
                   members = Map.empty,
                   memberId = memberId,
@@ -234,6 +250,7 @@ class GroupCoordinator(val brokerId: Int,
       responseCallback(Array.empty, Errors.NOT_COORDINATOR_FOR_GROUP.code)
     } else {
       val group = groupManager.getGroup(groupId)
+      //组已经被删除了
       if (group == null)
         responseCallback(Array.empty, Errors.UNKNOWN_MEMBER_ID.code)
       else
@@ -252,6 +269,7 @@ class GroupCoordinator(val brokerId: Int,
       if (!group.has(memberId)) {
         responseCallback(Array.empty, Errors.UNKNOWN_MEMBER_ID.code)
       } else if (generationId != group.generationId) {
+        //这个组的generationId不匹配,说明可能是一个超时的请求，上一个组的请求
         responseCallback(Array.empty, Errors.ILLEGAL_GENERATION.code)
       } else {
         group.currentState match {
@@ -259,10 +277,12 @@ class GroupCoordinator(val brokerId: Int,
             responseCallback(Array.empty, Errors.UNKNOWN_MEMBER_ID.code)
 
           case PreparingRebalance =>
+            //组又重新来到了rebalance阶段
             responseCallback(Array.empty, Errors.REBALANCE_IN_PROGRESS.code)
 
           case AwaitingSync =>
             group.get(memberId).awaitingSyncCallback = responseCallback
+            //因为收到了新的请求，所以可以将heartbeat事件重置了
             completeAndScheduleNextHeartbeatExpiration(group, group.get(memberId))
 
             // if this is the leader, then we can attempt to persist state and transition to stable
@@ -278,9 +298,11 @@ class GroupCoordinator(val brokerId: Int,
                   // another member may have joined the group while we were awaiting this callback,
                   // so we must ensure we are still in the AwaitingSync state and the same generation
                   // when it gets invoked. if we have transitioned to another state, then do nothing
+                  //有可能又有一个新的成员加入，所以需要再次检查
                   if (group.is(AwaitingSync) && generationId == group.generationId) {
                     if (errorCode != Errors.NONE.code) {
                       resetAndPropagateAssignmentError(group, errorCode)
+                      //失败了的话就让客户端去重新发送join group的请求
                       maybePrepareRebalance(group)
                     } else {
                       setAndPropagateAssignment(group, assignment)
@@ -293,6 +315,7 @@ class GroupCoordinator(val brokerId: Int,
 
           case Stable =>
             // if the group is stable, we just return the current assignment
+            //返回分配的信息
             val memberMetadata = group.get(memberId)
             responseCallback(memberMetadata.assignment, Errors.NONE.code)
             completeAndScheduleNextHeartbeatExpiration(group, group.get(memberId))
@@ -328,7 +351,9 @@ class GroupCoordinator(val brokerId: Int,
             responseCallback(Errors.UNKNOWN_MEMBER_ID.code)
           } else {
             val member = group.get(consumerId)
+            //标记成员已经离开了
             removeHeartbeatForLeavingMember(group, member)
+            //触发重平衡
             onMemberFailure(group, member)
             responseCallback(Errors.NONE.code)
           }
@@ -368,6 +393,7 @@ class GroupCoordinator(val brokerId: Int,
             responseCallback(Errors.ILLEGAL_GENERATION.code)
           } else {
             val member = group.get(memberId)
+            //触发心跳 机制
             completeAndScheduleNextHeartbeatExpiration(group, member)
             responseCallback(Errors.NONE.code)
           }
@@ -426,13 +452,14 @@ class GroupCoordinator(val brokerId: Int,
 
   def handleFetchOffsets(groupId: String,
                          partitions: Seq[TopicPartition]): Map[TopicPartition, OffsetFetchResponse.PartitionData] = {
+    //应该在哪里已经启动了
     if (!isActive.get) {
       partitions.map { case topicPartition =>
         (topicPartition, new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.GROUP_COORDINATOR_NOT_AVAILABLE.code))}.toMap
-    } else if (!isCoordinatorForGroup(groupId)) {
+    } else if (!isCoordinatorForGroup(groupId)) {//是否是该组协调者
       partitions.map { case topicPartition =>
         (topicPartition, new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.NOT_COORDINATOR_FOR_GROUP.code))}.toMap
-    } else if (isCoordinatorLoadingInProgress(groupId)) {
+    } else if (isCoordinatorLoadingInProgress(groupId)) {//看字面意思就是是否在loading
       partitions.map { case topicPartition =>
         (topicPartition, new OffsetFetchResponse.PartitionData(OffsetFetchResponse.INVALID_OFFSET, "", Errors.GROUP_LOAD_IN_PROGRESS.code))}.toMap
     } else {
@@ -517,6 +544,7 @@ class GroupCoordinator(val brokerId: Int,
 
   private def setAndPropagateAssignment(group: GroupMetadata, assignment: Map[String, Array[Byte]]) {
     assert(group.is(AwaitingSync))
+    //每个memeber都写好分配方案
     group.allMemberMetadata.foreach(member => member.assignment = assignment(member.memberId))
     propagateAssignment(group, Errors.NONE.code)
   }
@@ -528,6 +556,7 @@ class GroupCoordinator(val brokerId: Int,
   }
 
   private def propagateAssignment(group: GroupMetadata, errorCode: Short) {
+    //逼迫他们重新进入join group的阶段
     for (member <- group.allMemberMetadata) {
       if (member.awaitingSyncCallback != null) {
         member.awaitingSyncCallback(member.assignment, errorCode)
@@ -561,10 +590,12 @@ class GroupCoordinator(val brokerId: Int,
    */
   private def completeAndScheduleNextHeartbeatExpiration(group: GroupMetadata, member: MemberMetadata) {
     // complete current heartbeat expectation
+    //完成本轮心跳事件
     member.latestHeartbeat = time.milliseconds()
     val memberKey = MemberKey(member.groupId, member.memberId)
     heartbeatPurgatory.checkAndComplete(memberKey)
 
+    //同时注册下一轮的客户端心跳
     // reschedule the next heartbeat expiration deadline
     val newHeartbeatDeadline = member.latestHeartbeat + member.sessionTimeoutMs
     val delayedHeartbeat = new DelayedHeartbeat(this, group, member, newHeartbeatDeadline, member.sessionTimeoutMs)
@@ -586,6 +617,7 @@ class GroupCoordinator(val brokerId: Int,
     // use the client-id with a random id suffix as the member-id
     val memberId = clientId + "-" + group.generateMemberIdSuffix
     val member = new MemberMetadata(memberId, group.groupId, clientId, clientHost, sessionTimeoutMs, protocols)
+    //这里设置了一个返回请求的回调函数
     member.awaitingJoinCallback = callback
     group.add(member.memberId, member)
     maybePrepareRebalance(group)
@@ -603,6 +635,7 @@ class GroupCoordinator(val brokerId: Int,
 
   private def maybePrepareRebalance(group: GroupMetadata) {
     group synchronized {
+      //判断是否是stable或者是awaitSync两个状态
       if (group.canRebalance)
         prepareRebalance(group)
     }
@@ -617,6 +650,7 @@ class GroupCoordinator(val brokerId: Int,
     info("Preparing to restabilize group %s with old generation %s".format(group.groupId, group.generationId))
 
     val rebalanceTimeout = group.rebalanceTimeout
+    //开启一个延时任务
     val delayedRebalance = new DelayedJoin(this, group, rebalanceTimeout)
     val groupKey = GroupKey(group.groupId)
     joinPurgatory.tryCompleteElseWatch(delayedRebalance, Seq(groupKey))
@@ -624,16 +658,19 @@ class GroupCoordinator(val brokerId: Int,
 
   private def onMemberFailure(group: GroupMetadata, member: MemberMetadata) {
     trace("Member %s in group %s has failed".format(member.memberId, group.groupId))
+    //彻底移除掉该请求
     group.remove(member.memberId)
     group.currentState match {
       case Dead =>
       case Stable | AwaitingSync => maybePrepareRebalance(group)
+      //有可能导致组变成Stable的状态
       case PreparingRebalance => joinPurgatory.checkAndComplete(GroupKey(group.groupId))
     }
   }
 
   def tryCompleteJoin(group: GroupMetadata, forceComplete: () => Boolean) = {
     group synchronized {
+      //大家都已经有了回调函数了
       if (group.notYetRejoinedMembers.isEmpty)
         forceComplete()
       else false
@@ -647,6 +684,7 @@ class GroupCoordinator(val brokerId: Int,
   def onCompleteJoin(group: GroupMetadata) {
     group synchronized {
       val failedMembers = group.notYetRejoinedMembers
+      //又有组在这个过程中加入了
       if (group.isEmpty || !failedMembers.isEmpty) {
         failedMembers.foreach { failedMember =>
           group.remove(failedMember.memberId)
@@ -685,6 +723,7 @@ class GroupCoordinator(val brokerId: Int,
 
   def tryCompleteHeartbeat(group: GroupMetadata, member: MemberMetadata, heartbeatDeadline: Long, forceComplete: () => Boolean) = {
     group synchronized {
+      //是否要保持心跳 member正在离开消费组
       if (shouldKeepMemberAlive(member, heartbeatDeadline) || member.isLeaving)
         forceComplete()
       else false
